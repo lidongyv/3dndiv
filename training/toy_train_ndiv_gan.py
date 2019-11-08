@@ -1,0 +1,370 @@
+from __future__ import print_function
+import argparse
+import random
+import numpy as np
+import torch
+import torch.optim as optim
+import sys
+sys.path.append('./auxiliary/')
+from toy_data import *
+from model import *
+from my_utils import *
+from ply import *
+import os
+import json
+import time, datetime
+import visdom
+
+# =============PARAMETERS======================================== #
+parser = argparse.ArgumentParser()
+parser.add_argument('--batchSize', type=int, default=32, help='input batch size')
+parser.add_argument('--workers', type=int, help='number of data loading workers', default=12)
+parser.add_argument('--nepoch', type=int, default=1200, help='number of epochs to train for')
+parser.add_argument('--model', type=str, default = '',  help='optional reload model path')
+parser.add_argument('--num_points', type=int, default = 2500,  help='number of points')
+parser.add_argument('--nb_primitives', type=int, default = 25,  help='number of primitives in the atlas')
+parser.add_argument('--super_points', type=int, default = 2500,  help='number of input points to pointNet, not used by default')
+parser.add_argument('--env', type=str, default ="toyatlasgan_div"   ,  help='visdom environment')
+parser.add_argument('--accelerated_chamfer', type=int, default =0   ,  help='use custom build accelarated chamfer')
+
+opt = parser.parse_args()
+print (opt)
+# ========================================================== #
+
+# =============DEFINE CHAMFER LOSS======================================== #
+if opt.accelerated_chamfer:
+	sys.path.append("./extension/")
+	import dist_chamfer as ext
+	distChamfer =  ext.chamferDist()
+
+else:
+	def pairwise_dist(x, y):
+		xx, yy, zz = torch.mm(x,x.t()), torch.mm(y,y.t()), torch.mm(x, y.t())
+		rx = (xx.diag().unsqueeze(0).expand_as(xx))
+		ry = (yy.diag().unsqueeze(0).expand_as(yy))
+		P = (rx.t() + ry - 2*zz)
+		return P
+
+
+	def NN_loss(x, y, dim=0):
+		dist = pairwise_dist(x, y)
+		values, indices = dist.min(dim=dim)
+		return values.mean()
+
+
+	def distChamfer(a,b):
+		x,y = a,b
+		bs, num_points, points_dim = x.size()
+		xx = torch.bmm(x, x.transpose(2,1))
+		yy = torch.bmm(y, y.transpose(2,1))
+		zz = torch.bmm(x, y.transpose(2,1))
+		diag_ind = torch.arange(0, num_points).type(torch.cuda.LongTensor)
+		rx = xx[:, diag_ind, diag_ind].unsqueeze(1).expand_as(xx)
+		ry = yy[:, diag_ind, diag_ind].unsqueeze(1).expand_as(yy)
+		P = (rx.transpose(2,1) + ry - 2*zz)
+		return torch.min(P, 1)[0], torch.min(P, 2)[0], torch.min(P, 1)[1], torch.min(P, 2)[1]
+# ========================================================== #
+
+# =============DEFINE stuff for logs ======================================== #
+# Launch visdom for visualization
+vis = visdom.Visdom(port = 8888, env=opt.env)
+now = datetime.datetime.now()
+blue = lambda x:'\033[94m' + x + '\033[0m'
+
+opt.manualSeed = 7269 # fix seed
+print("Random Seed: ", opt.manualSeed)
+random.seed(opt.manualSeed)
+torch.manual_seed(opt.manualSeed)
+best_val_loss = 10
+# ========================================================== #
+
+dir_name=os.path.join('./toygan_div/')
+if not os.path.isdir(dir_name):
+	os.mkdir(dir_name)
+# ===================CREATE DATASET================================= #
+#Create train/test dataloader
+dataset = ToyData(npoints = 2500)
+dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
+										  shuffle=True, num_workers=int(opt.workers))
+
+print('training set', len(dataset))
+len_dataset = len(dataset)
+
+test_dataset = ToyData(npoints = 2500,train=False)
+
+
+print('training set', len(test_dataset))
+
+
+# ========================================================== #
+
+# ===================CREATE network================================= #
+network1 = AE_AtlasNet_SPHERE_toy(num_points = 2500, nb_primitives = 1)
+network2 = AE_AtlasNet_toy(num_points = 2500, nb_primitives = 1)
+network3 = AE_AtlasNet_toy(num_points = 2500, nb_primitives = 25)
+discriminator=Discriminator()
+network1.cuda() #put network on GPU
+network1.apply(weights_init) #initialization of the weight
+network2.cuda() #put network on GPU
+network2.apply(weights_init) #initialization of the weight
+network3.cuda() #put network on GPU
+network3.apply(weights_init) #initialization of the weight
+discriminator.cuda() #put network on GPU
+discriminator.apply(weights_init) #initialization of the weight
+if opt.model != '':
+	network1.load_state_dict(torch.load(opt.model))
+	print(" Previous weight loaded ")
+# ========================================================== #
+
+# ===================CREATE optimizer================================= #
+lrate = 0.001 #learning rate
+optimizer1 = optim.Adam(network1.parameters(), lr = lrate)
+optimizer2 = optim.Adam(network2.parameters(), lr = lrate)
+optimizer3 = optim.Adam(network3.parameters(), lr = lrate)
+optimizerd = optim.Adam(discriminator.parameters(), lr = lrate)
+labels_generated_points = torch.Tensor(range(1, 2501))
+labels_generated_points = (labels_generated_points)%(25)+1
+labels_generated_points = labels_generated_points.contiguous().view(2500)
+# ========================================================== #
+train_data=[]
+test_data=[]
+BCE = nn.BCELoss()
+real_label=torch.ones(opt.batchSize).cuda()
+fake_label=torch.zeros(opt.batchSize).cuda()
+# =============start of the learning loop ======================================== #
+for epoch in range(opt.nepoch):
+	#TRAIN MODE
+
+	# learning rate schedule
+	if epoch==100:
+		optimizer1 = optim.Adam(network1.parameters(), lr = lrate/10.0)
+		optimizer2 = optim.Adam(network2.parameters(), lr = lrate/10.0)
+		optimizer3 = optim.Adam(network3.parameters(), lr = lrate/10.0)
+	for i, data in enumerate(dataloader, 0):
+		network1.train()
+		network2.train()
+		network3.train()
+		discriminator.train()
+		optimizer1.zero_grad()
+		optimizer2.zero_grad()
+		optimizer3.zero_grad()
+		optimizerd.zero_grad()
+		img, points= data
+		points = points.transpose(2,1).contiguous()
+		points = points.cuda()
+		#SUPER_RESOLUTION optionally reduce the size of the points fed to PointNet
+		points = points[:,:,:opt.super_points].contiguous()
+		#END SUPER RESOLUTION
+		pointsReconstructed1  = network1.forward_inference_gan_div(points) #forward pass
+		pointsReconstructed2  = network2.forward_inference_gan_div(points) #forward pass
+		pointsReconstructed3  = network3.forward_inference_gan_div(points) #forward pass
+		d_real=discriminator(points)
+		errD_real=BCE(d_real,real_label)
+		
+		d_fake1=discriminator(pointsReconstructed1.transpose(2,1).contiguous())
+		d_fake2=discriminator(pointsReconstructed2.transpose(2,1).contiguous())
+		d_fake3=discriminator(pointsReconstructed3.transpose(2,1).contiguous())
+		errD_fake=(BCE(d_fake1,fake_label)+BCE(d_fake2,fake_label)+BCE(d_fake3,fake_label))/3
+		err_D=errD_fake+errD_real
+		err_D.backward(retain_graph=True)
+		optimizerd.step()
+
+		optimizer1.zero_grad()
+		optimizer2.zero_grad()
+		optimizer3.zero_grad()
+		optimizerd.zero_grad()
+		d_fake1=discriminator(pointsReconstructed1.transpose(2,1).contiguous())
+		d_fake2=discriminator(pointsReconstructed2.transpose(2,1).contiguous())
+		d_fake3=discriminator(pointsReconstructed3.transpose(2,1).contiguous())
+		loss_net=(BCE(d_fake1,real_label)+BCE(d_fake2,real_label)+BCE(d_fake3,real_label))/3
+		loss_net.backward(retain_graph=True)
+		optimizer1.step() #gradient update
+		optimizer2.step() #gradient update
+		optimizer3.step() #gradient update
+		
+		optimizer1.zero_grad()
+		optimizer2.zero_grad()
+		optimizer3.zero_grad()
+		optimizerd.zero_grad()
+		pointsReconstructed1  = network1.forward_inference_gan_div(points) #forward pass
+		pointsReconstructed2  = network2.forward_inference_gan_div(points) #forward pass
+		pointsReconstructed3  = network3.forward_inference_gan_div(points) #forward pass
+		dist1, dist2,_,_ = distChamfer(points.transpose(2,1).contiguous(), pointsReconstructed1) #loss function
+		loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
+		loss_net.backward()
+		optimizer1.step() #gradient update
+		dist1, dist2,_,_ = distChamfer(points.transpose(2,1).contiguous(), pointsReconstructed2) #loss function
+		loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
+		loss_net.backward()
+		optimizer2.step() #gradient update
+		dist1, dist2,_,_ = distChamfer(points.transpose(2,1).contiguous(), pointsReconstructed3) #loss function
+		loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
+		loss_net.backward()
+		optimizer3.step() #gradient update
+		train_data.append([points.transpose(2,1).contiguous()[0].data.cpu().numpy(),pointsReconstructed1[0].data.cpu().numpy(),pointsReconstructed2[0].data.cpu().numpy() \
+			,pointsReconstructed3[0].data.cpu().numpy()])
+		# VIZUALIZE
+		if i%1 <= 0:
+			vis.scatter(X = points.transpose(2,1).contiguous()[0].data.cpu(),
+					win = 'TRAIN_INPUT',
+					opts = dict(
+						title = "TRAIN_INPUT",
+						markersize = 2,
+						xtickmin=-1,
+						xtickmax=1,
+						xtickstep=0.5,
+						ytickmin=-1,
+						ytickmax=1,
+						ytickstep=0.5,
+						ztickmin=-1,
+						ztickmax=1,
+						ztickstep=0.5,
+						),
+					)
+			vis.scatter(X = pointsReconstructed1[0].data.cpu(),
+					win = 'TRAIN_INPUT_RECONSTRUCTED1',
+					opts = dict(
+						title="Atlas_Sphere",
+						markersize=2,
+						xtickmin=-1,
+						xtickmax=1,
+						xtickstep=0.5,
+						ytickmin=-1,
+						ytickmax=1,
+						ytickstep=0.5,
+						ztickmin=-1,
+						ztickmax=1,
+						ztickstep=0.5,
+						),
+					)
+			vis.scatter(X = pointsReconstructed2[0].data.cpu(),
+					win = 'TRAIN_INPUT_RECONSTRUCTED2',
+					opts = dict(
+						title="Atlas_Patch",
+						markersize=2,
+						xtickmin=-1,
+						xtickmax=1,
+						xtickstep=0.5,
+						ytickmin=-1,
+						ytickmax=1,
+						ytickstep=0.5,
+						ztickmin=-1,
+						ztickmax=1,
+						ztickstep=0.5,
+						),
+					)
+			vis.scatter(X = pointsReconstructed3[0].data.cpu(),
+					Y = labels_generated_points,
+					win = 'TRAIN_INPUT_RECONSTRUCTED3',
+					opts = dict(
+						title="Atlas_Patch_25",
+						markersize=2,
+						xtickmin=-1,
+						xtickmax=1,
+						xtickstep=0.5,
+						ytickmin=-1,
+						ytickmax=1,
+						ytickstep=0.5,
+						ztickmin=-1,
+						ztickmax=1,
+						ztickstep=0.5,
+						),
+					)
+		print('[%d: %d/%d] G loss: %f D loss %f ' %(epoch, i, len_dataset/32, loss_net.item(),err_D.item()))
+	
+		#test
+		print('eval')
+		network1.eval()
+		network2.eval()
+		network3.eval()
+		# learning rate schedule
+		for eval_data in range(2):
+			points=test_dataset.__getitem__(eval_data)[1].view(1,2500,3)
+			with torch.no_grad():
+				optimizer1.zero_grad()
+				optimizer2.zero_grad()
+				optimizer3.zero_grad()
+				points = points.transpose(2,1).contiguous()
+				points = points.cuda()
+				#SUPER_RESOLUTION optionally reduce the size of the points fed to PointNet
+				points = points[:,:,:opt.super_points].contiguous()
+				#END SUPER RESOLUTION
+				pointsReconstructed1  = network1.forward_inference_gan_div(points) #forward pass
+				pointsReconstructed2  = network2.forward_inference_gan_div(points) #forward pass
+				pointsReconstructed3  = network3.forward_inference_gan_div(points) #forward pass
+				test_data.append([points.transpose(2,1).contiguous()[0].data.cpu().numpy(),pointsReconstructed1[0].data.cpu().numpy(),pointsReconstructed2[0].data.cpu().numpy() \
+					,pointsReconstructed3[0].data.cpu().numpy()])
+				# VIZUALIZE
+				vis.scatter(X = points.transpose(2,1).contiguous()[0].data.cpu(),
+						win = 'eval_INPUT',
+						opts = dict(
+							title = "eval_INPUT",
+							markersize = 2,
+							xtickmin=-1,
+							xtickmax=1,
+							xtickstep=0.5,
+							ytickmin=-1,
+							ytickmax=1,
+							ytickstep=0.5,
+							ztickmin=-1,
+							ztickmax=1,
+							ztickstep=0.5,
+							),
+						)
+
+				vis.scatter(X = pointsReconstructed1[0].data.cpu(),
+						win = 'eval_INPUT_RECONSTRUCTED1',
+						opts = dict(
+							title="eval_Atlas_Sphere",
+							markersize=2,
+							xtickmin=-1,
+							xtickmax=1,
+							xtickstep=0.5,
+							ytickmin=-1,
+							ytickmax=1,
+							ytickstep=0.5,
+							ztickmin=-1,
+							ztickmax=1,
+							ztickstep=0.5,
+							),
+						)
+				vis.scatter(X = pointsReconstructed2[0].data.cpu(),
+						win = 'eval_INPUT_RECONSTRUCTED2',
+						opts = dict(
+							title="eval_Atlas_Patch",
+							markersize=2,
+							xtickmin=-1,
+							xtickmax=1,
+							xtickstep=0.5,
+							ytickmin=-1,
+							ytickmax=1,
+							ytickstep=0.5,
+							ztickmin=-1,
+							ztickmax=1,
+							ztickstep=0.5,
+							),
+						)
+				vis.scatter(X = pointsReconstructed3[0].data.cpu(),
+						Y = labels_generated_points,
+						win = 'eval_INPUT_RECONSTRUCTED3',
+						opts = dict(
+							title="eval_Atlas_Patch_25",
+							markersize=2,
+							xtickmin=-1,
+							xtickmax=1,
+							xtickstep=0.5,
+							ytickmin=-1,
+							ytickmax=1,
+							ytickstep=0.5,
+							ztickmin=-1,
+							ztickmax=1,
+							ztickstep=0.5,
+							),
+						)
+	#save last network
+	print('saving net...')
+	torch.save(network1.state_dict(), '%s/network1.pth' % (dir_name))
+	torch.save(network2.state_dict(), '%s/network2.pth' % (dir_name))
+	torch.save(network2.state_dict(), '%s/network3.pth' % (dir_name))
+	np.save('%s/train_data' % (dir_name),np.array(train_data))
+	np.save('%s/test_data' % (dir_name),np.array(test_data))
