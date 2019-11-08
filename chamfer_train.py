@@ -83,7 +83,6 @@ torch.manual_seed(opt.manualSeed)
 best_val_loss = 10
 # ========================================================== #
 
-
 # ===================CREATE DATASET================================= #
 #Create train/test dataloader
 dataset = ShapeNet(root='./data/test',npoint=10000)

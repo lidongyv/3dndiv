@@ -18,6 +18,7 @@ class ShapeNet(data.Dataset):
 		for i in self.files:
 			if i.endswith('.ply'):
 				self.names.append(i)
+		self.names.sort()
 	def __getitem__(self, index):
 		name=os.path.join(self.root,self.names[index])
 		mystring = my_get_n_random_lines(name, n = self.npoints)
