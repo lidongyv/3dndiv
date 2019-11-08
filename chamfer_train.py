@@ -85,7 +85,7 @@ best_val_loss = 10
 
 # ===================CREATE DATASET================================= #
 #Create train/test dataloader
-dataset = ShapeNet(root='./data/test',npoint=10000)
+dataset = ShapeNet(root='./data/train',npoint=10000)
 #dataset = ToyData(npoints = 2500)
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
 										  shuffle=False, num_workers=int(opt.workers))
@@ -131,7 +131,8 @@ for i, data in enumerate(dataloader, 0):
 	loss_net=torch.ones(1).cuda()
 	step=-1
 	points, file_name = data
-	file_name=file_name[0].split('.points.ply')[0].split('test/')[-1]
+	file_name=file_name[0].split('.points.ply')[0].split('/')[-1]
+
 	# points=data[1]
 	points = points.cuda().contiguous().squeeze()
 	#10000,3
@@ -243,14 +244,16 @@ for i, data in enumerate(dataloader, 0):
 						ztickstep=0.5,
 						),
 					)
-			recons.append([ target_points.data.cpu().numpy(), \
+			recons.append(np.concatenate([target_points.data.cpu().numpy(), \
 				pointsReconstructed.data.cpu().numpy(), \
 					sample_points.data.cpu().numpy(), \
 					gridReconstructed.data.cpu().numpy(), \
-						grid.data.cpu().numpy()])
+						grid.data.cpu().numpy()],axis=1))
+
 		print('[object id:%d,step: %d] train loss: %f' %(i,step, loss_net.item()))
 	
 	#save last network
 	print('saving net...')
 	torch.save({'state':network.state_dict(),'steps':step}, './results/chamfer/%s.pth' % (file_name))
-	np.save('./results/chamfer/%s.npy' % (file_name),recons)
+	np.save('./results/chamfer/%s.npy'%(file_name),np.array(recons))
+	print(file_name)

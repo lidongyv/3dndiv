@@ -25,7 +25,7 @@ parser.add_argument('--model', type=str, default = '',  help='optional reload mo
 parser.add_argument('--num_points', type=int, default = 2500,  help='number of points')
 parser.add_argument('--nb_primitives', type=int, default = 1,  help='number of primitives in the atlas')
 parser.add_argument('--super_points', type=int, default = 2500,  help='number of input points to pointNet, not used by default')
-parser.add_argument('--env', type=str, default ="ndiv"   ,  help='visdom environment')
+parser.add_argument('--env', type=str, default ="ndivgan"   ,  help='visdom environment')
 parser.add_argument('--accelerated_chamfer', type=int, default =0   ,  help='use custom build accelarated chamfer')
 parser.add_argument('--ngpu', type=int, default = 1,  help='number of gpus')
 opt = parser.parse_args()
@@ -71,7 +71,7 @@ def distChamfer(a,b):
 # =============DEFINE stuff for logs ======================================== #
 # Launch visdom for visualization
 vis = visdom.Visdom(env=opt.env)
-dir_name =  os.path.join('chamfer')
+dir_name =  os.path.join('./results/gan')
 if not os.path.exists(dir_name):
 	os.mkdir(dir_name)
 
@@ -85,7 +85,7 @@ best_val_loss = 10
 
 # ===================CREATE DATASET================================= #
 #Create train/test dataloader
-dataset = ShapeNet(root='./data/test',npoint=10000)
+dataset = ShapeNet(root='./data/train',npoint=10000)
 #dataset = ToyData(npoints = 2500)
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
 										  shuffle=False, num_workers=int(opt.workers))
@@ -98,6 +98,9 @@ network = ND_Map(num_points = opt.num_points, nb_primitives = opt.nb_primitives)
 network=torch.nn.DataParallel(network,device_ids=range(opt.ngpu))
 network.cuda() #put network on GPU
 network.apply(weights_init) #initialization of the weight
+dnet=Discriminator()
+dnet=torch.nn.DataParallel(dnet,device_ids=range(opt.ngpu))
+dnet.cuda() #put network on GPU
 
 if opt.model != '':
 	network.load_state_dict(torch.load(opt.model))
@@ -107,6 +110,7 @@ if opt.model != '':
 # ===================CREATE optimizer================================= #
 lrate = 0.001 #learning rate
 optimizer = optim.Adam(network.parameters(), lr = lrate)
+optimizer_d = optim.Adam(dnet.parameters(), lr = lrate)
 # ========================================================== #
 
 
@@ -118,6 +122,8 @@ train_curve = []
 # =============start of the learning loop ======================================== #
 #TRAIN MODE
 network.train()
+dnet.train()
+bce = torch.nn.BCELoss()
 grid_x=torch.arange(50).unsqueeze(0).expand(50,50).contiguous()
 grid_y=grid_x.transpose(1,0).contiguous()
 grid=torch.cat([grid_x.view(-1,1),grid_y.view(-1,1)],dim=-1).cuda().float()
@@ -125,10 +131,11 @@ grid=(grid-25)/25
 color_g=torch.ceil(((grid.data.cpu()+1)/2)*255).long()
 color_g=torch.cat([color_g,torch.ones_like(color_g[:,:1])*133],dim=1)
 color_g=color_g.data.numpy()
-
+real_label=torch.ones(opt.batchSize).cuda()
+fake_label=torch.zeros(opt.batchSize).cuda()
 # learning rate schedule
 for i, data in enumerate(dataloader, 0):
-	loss_net=torch.ones(1).cuda()
+	loss_c=torch.ones(1).cuda()
 	step=-1
 	points, file_name = data
 	file_name=file_name[0].split('.points.ply')[0].split('test/')[-1]
@@ -136,7 +143,8 @@ for i, data in enumerate(dataloader, 0):
 	points = points.cuda().contiguous().squeeze()
 	#10000,3
 	recons=[]
-	while(loss_net.item()>5*1e-3):
+	
+	while(loss_c.item()>4*1e-3):
 		sample_index=np.random.randint(low=0,high=points.shape[0],size=opt.num_points)
 		target_points = points[sample_index,:]
 		sample_points = torch.rand_like(target_points[:,0:2])*2-1
@@ -146,12 +154,23 @@ for i, data in enumerate(dataloader, 0):
 		color_t=torch.ceil(((target_points.data.cpu()+1)/2)*255).long().data.numpy()
 		#optimize each object
 		optimizer.zero_grad()
+		optimizer_d.zero_grad()
 		#END SUPER RESOLUTION
 		pointsReconstructed  = network(sample_points) #2500,3
+		fake_d=dnet(pointsReconstructed.transpose(1,0).unsqueeze(0).contiguous())
+		real_d=dnet(target_points.transpose(1,0).unsqueeze(0).contiguous())
+		loss_d=bce(fake_d,fake_label)+bce(real_d,real_label)
+		loss_d.backward(retain_graph=True)
+		optimizer_d.step()
+		optimizer.zero_grad()
+		optimizer_d.zero_grad()
+		pointsReconstructed  = network(sample_points) #2500,3
 		dist1, dist2= custom_dischamfer(target_points, pointsReconstructed) #loss function
-		#dist1, dist2,_,_ = distChamfer(target_points, pointsReconstructed) #loss function
-		loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
-		loss_net.backward()
+		loss_c = (torch.mean(dist1)) + (torch.mean(dist2))
+		fake_g=dnet(pointsReconstructed.transpose(1,0).unsqueeze(0).contiguous())
+		loss_g=bce(fake_g,real_label)
+		map_loss=loss_c+5*1e-3*loss_g
+		map_loss.backward()
 		optimizer.step()
 		step+=1
 		# VIZUALIZE
@@ -243,14 +262,13 @@ for i, data in enumerate(dataloader, 0):
 						ztickstep=0.5,
 						),
 					)
-			recons.append([ target_points.data.cpu().numpy(), \
+			recons.append(np.concatenate([target_points.data.cpu().numpy(), \
 				pointsReconstructed.data.cpu().numpy(), \
 					sample_points.data.cpu().numpy(), \
 					gridReconstructed.data.cpu().numpy(), \
-						grid.data.cpu().numpy()])
-		print('[object id:%d,step: %d] train loss: %f' %(i,step, loss_net.item()))
-	
+						grid.data.cpu().numpy()],axis=1))
+		print('[object id:%d,step: %d] chamfer loss: %f gan loss: %f d loss: %f' %(i,step, loss_c.item(),loss_g.item(),loss_d.item()))
 	#save last network
 	print('saving net...')
-	torch.save({'state':network.state_dict(),'steps':step}, './results/chamfer/%s.pth' % (file_name))
-	np.save('./results/chamfer/%s.npy' % (file_name),recons)
+	torch.save({'map_state':network.state_dict(),'d_state':dnet.state_dict(),'steps':step}, './results/gan/%s.pth' % (file_name))
+	np.save('./results/gan/%s.npy' % (file_name),recons)

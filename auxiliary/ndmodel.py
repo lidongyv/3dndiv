@@ -8,42 +8,6 @@ import numpy as np
 import torch.nn.functional as F
 
 
-class PointNetfeat(nn.Module):
-    def __init__(self, num_points = 2500, global_feat = True, trans = False):
-        super(PointNetfeat, self).__init__()
-
-        self.conv1 = torch.nn.Conv1d(3, 64, 1)
-        self.conv2 = torch.nn.Conv1d(64, 128, 1)
-        self.conv3 = torch.nn.Conv1d(128, 1024, 1)
-
-        self.bn1 = torch.nn.BatchNorm1d(64)
-        self.bn2 = torch.nn.BatchNorm1d(128)
-        self.bn3 = torch.nn.BatchNorm1d(1024)
-        self.trans = trans
-        self.num_points = num_points
-        self.global_feat = global_feat
-    def forward(self, x):
-        batchsize = x.size()[0]
-        if self.trans:
-            trans = self.stn(x)
-            x = x.transpose(2,1)
-            x = torch.bmm(x, trans)
-            x = x.transpose(2,1)
-        x = F.relu(self.bn1(self.conv1(x)))
-        pointfeat = x
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = self.bn3(self.conv3(x))
-        x,_ = torch.max(x, 2)
-        x = x.view(-1, 1024)
-        if self.trans:
-            if self.global_feat:
-                return x, trans
-            else:
-                x = x.view(-1, 1024, 1).repeat(1, 1, self.num_points)
-                return torch.cat([x, pointfeat], 1), trans
-        else:
-            return x
-
 class Discriminator(nn.Module):
     def __init__(self, num_points = 2500, global_feat = True, trans = False):
         super(Discriminator, self).__init__()
@@ -51,31 +15,42 @@ class Discriminator(nn.Module):
         self.conv2 = torch.nn.Conv1d(64, 128, 1)
         self.conv3 = torch.nn.Conv1d(128, 1024, 1)
 
-        self.bn1 = torch.nn.BatchNorm1d(64)
-        self.bn2 = torch.nn.BatchNorm1d(128)
-        self.bn3 = torch.nn.BatchNorm1d(1024)
+        self.bn1 = torch.nn.GroupNorm(64,64)
+        self.bn2 = torch.nn.GroupNorm(128,128)
+        self.bn3 = torch.nn.GroupNorm(1024,1024)
         self.trans = trans
         self.discriminator = nn.Sequential(
         nn.Linear(1024, 512),
-        nn.BatchNorm1d(512),
+        nn.GroupNorm(1,512),
         nn.ReLU(),
         nn.Linear(512, 128),
-        nn.BatchNorm1d(128),
+        nn.GroupNorm(1,128),
         nn.ReLU(),
-        nn.Linear(128, 1),
+        nn.Linear(128, 64),
+        nn.Linear(64, 1),
         )
         self.sigmoid=torch.nn.Sigmoid()
         #self.mp1 = torch.nn.MaxPool1d(num_points)
         self.num_points = num_points
         self.global_feat = global_feat
+        for m in self.modules():
+            if isinstance(m, nn.Conv1d):
+                torch.nn.init.kaiming_uniform_(m.weight)
+                #m.weight.data.normal_(0.0, 0.02)
+            elif isinstance(m, nn.Linear):
+                torch.nn.init.kaiming_uniform_(m.weight)
+                #m.weight.data.normal_(0.0, 0.02)
+                m.bias.data.fill_(0.0)
+            elif isinstance(m, nn.LayerNorm):
+                m.weight.data.normal_(1.0, 0.02)
+                m.bias.data.fill_(0)
     def forward(self, x):
         batchsize = x.size()[0]
         x = F.relu(self.bn1(self.conv1(x)))
-        pointfeat = x
         x = F.relu(self.bn2(self.conv2(x)))
         x = self.bn3(self.conv3(x))
         x,_ = torch.max(x, 2)
-        x = x.view(-1, 1024)
+        x = x.view(batchsize, 1024)
         x=self.discriminator(x)
         x=self.sigmoid(x)
         return x
