@@ -73,7 +73,7 @@ def distChamfer(a,b):
 vis = visdom.Visdom(env=opt.env)
 dir_name =  os.path.join('chamfer')
 if not os.path.exists(dir_name):
-    os.mkdir(dir_name)
+	os.mkdir(dir_name)
 
 opt.manualSeed = random.randint(1, 10000) # fix seed
 opt.manualSeed = 7269 # fix seed
@@ -88,7 +88,7 @@ best_val_loss = 10
 dataset = ShapeNet(root='./data/test',npoint=10000)
 #dataset = ToyData(npoints = 2500)
 dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batchSize,
-                                          shuffle=False, num_workers=int(opt.workers))
+										  shuffle=False, num_workers=int(opt.workers))
 print('training set', len(dataset))
 len_dataset = len(dataset)
 # ========================================================== #
@@ -100,8 +100,8 @@ network.cuda() #put network on GPU
 network.apply(weights_init) #initialization of the weight
 
 if opt.model != '':
-    network.load_state_dict(torch.load(opt.model))
-    print(" Previous weight loaded ")
+	network.load_state_dict(torch.load(opt.model))
+	print(" Previous weight loaded ")
 # ========================================================== #
 
 # ===================CREATE optimizer================================= #
@@ -118,42 +118,51 @@ train_curve = []
 # =============start of the learning loop ======================================== #
 #TRAIN MODE
 network.train()
+grid_x=torch.arange(50).unsqueeze(0).expand(50,50).contiguous()
+grid_y=grid_x.transpose(1,0).contiguous()
+grid=torch.cat([grid_x.view(-1,1),grid_y.view(-1,1)],dim=-1).cuda().float()
+grid=(grid-25)/25
+color_g=torch.ceil(((grid.data.cpu()+1)/2)*255).long()
+color_g=torch.cat([color_g,torch.ones_like(color_g[:,:1])*133],dim=1)
+color_g=color_g.data.numpy()
+
+results=[]
 # learning rate schedule
 for i, data in enumerate(dataloader, 0):
-    loss_net=torch.ones(1).cuda()
-    step=-1
-    points, file_name = data
-    # points=data[1]
-    points = points.cuda().contiguous().squeeze()
-    #10000,3
-    recons=[]
-    while(loss_net.item()>3*1e-3):
-        sample_index=np.random.randint(low=0,high=points.shape[0],size=opt.num_points)
-        target_points = points[sample_index,:]
-        sample_points = torch.rand_like(target_points[:,0:2])*2-1
-        color=torch.ceil(((sample_points.data.cpu()+1)/2)*255).long()
-        color=torch.cat([color,color[:,:1]],dim=1)
-        color=color.data.numpy()
-        color_t=torch.ceil(((target_points.data.cpu()+1)/2)*255).long().data.numpy()
-        #optimize each object
-        optimizer.zero_grad()
-        #END SUPER RESOLUTION
-        pointsReconstructed  = network(sample_points) #2500,3
-        dist1, dist2= custom_dischamfer(target_points, pointsReconstructed) #loss function
-        #dist1, dist2,_,_ = distChamfer(target_points, pointsReconstructed) #loss function
-        loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
-        loss_net.backward()
-        optimizer.step()
-        step+=1
-        # VIZUALIZE
-        if step%200 <= 0:
-            recons.append(pointsReconstructed.data.cpu().numpy())
-            vis.scatter(X = target_points.data.cpu(),
-                    win = 'TRAIN_Target',
-                    opts = dict(
-                        markercolor=color_t,
-                        title = "TRAIN_Target",
-					    markersize = 3,
+	loss_net=torch.ones(1).cuda()
+	step=-1
+	points, file_name = data
+	# points=data[1]
+	points = points.cuda().contiguous().squeeze()
+	#10000,3
+	results.append(points.data.cpu().numpy())
+	recons=[]
+	while(loss_net.item()>5*1e-3):
+		sample_index=np.random.randint(low=0,high=points.shape[0],size=opt.num_points)
+		target_points = points[sample_index,:]
+		sample_points = torch.rand_like(target_points[:,0:2])*2-1
+		color=torch.ceil(((sample_points.data.cpu()+1)/2)*255).long()
+		color=torch.cat([color,color[:,:1]],dim=1)
+		color=color.data.numpy()
+		color_t=torch.ceil(((target_points.data.cpu()+1)/2)*255).long().data.numpy()
+		#optimize each object
+		optimizer.zero_grad()
+		#END SUPER RESOLUTION
+		pointsReconstructed  = network(sample_points) #2500,3
+		dist1, dist2= custom_dischamfer(target_points, pointsReconstructed) #loss function
+		#dist1, dist2,_,_ = distChamfer(target_points, pointsReconstructed) #loss function
+		loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
+		loss_net.backward()
+		optimizer.step()
+		step+=1
+		# VIZUALIZE
+		if step%200 <= 0:
+			recons.append(pointsReconstructed.data.cpu().numpy())
+			vis.scatter(X = target_points.data.cpu(),
+					win = 'TRAIN_Target',
+					opts = dict(
+						title = "TRAIN_Target",
+						markersize = 3,
 						xtickmin=-1,
 						xtickmax=1,
 						xtickstep=0.5,
@@ -164,13 +173,13 @@ for i, data in enumerate(dataloader, 0):
 						ztickmax=1,
 						ztickstep=0.5,
 						),
-                    )
-            vis.scatter(X = pointsReconstructed.data.cpu(),
-                    win = 'TRAIN_INPUT_RECONSTRUCTED',
-                    opts = dict(
-                        markercolor=color,
-                        title="TRAIN_INPUT_RECONSTRUCTED",
-					    markersize = 3,
+					)
+			vis.scatter(X = pointsReconstructed.data.cpu(),
+					win = 'TRAIN_INPUT_RECONSTRUCTED',
+					opts = dict(
+						markercolor=color,
+						title="TRAIN_INPUT_RECONSTRUCTED",
+						markersize = 3,
 						xtickmin=-1,
 						xtickmax=1,
 						xtickstep=0.5,
@@ -181,14 +190,13 @@ for i, data in enumerate(dataloader, 0):
 						ztickmax=1,
 						ztickstep=0.5,
 						),
-                    )
-
-            vis.scatter(X = sample_points.data.cpu().numpy(),
-                    win = 'TRAIN_INPUT',
-                    opts = dict(
-                        markercolor=color,
-                        title="TRAIN_INPUT",
-					    markersize = 4,
+					)
+			vis.scatter(X = sample_points.data.cpu().numpy(),
+					win = 'TRAIN_INPUT',
+					opts = dict(
+						markercolor=color,
+						title="TRAIN_INPUT",
+						markersize = 4,
 						xtickmin=-1,
 						xtickmax=1,
 						xtickstep=0.5,
@@ -199,11 +207,46 @@ for i, data in enumerate(dataloader, 0):
 						ztickmax=1,
 						ztickstep=0.5,
 						),
-                    )
-            
-        print('[object id:%d,step: %d] train loss: %f' %(i,step, loss_net.item()))
-    
-    #save last network
-    print('saving net...')
-    torch.save(network.state_dict(), '%s/%s.pth' % (dir_name,file_name))
-    np.save()
+					)
+			with torch.no_grad():
+				gridReconstructed  = network(grid)
+			vis.scatter(X = gridReconstructed.data.cpu(),
+					win = 'grid_RECONSTRUCTED',
+					opts = dict(
+						markercolor=color_g,
+						title="grid_RECONSTRUCTED",
+						markersize = 3,
+						xtickmin=-1,
+						xtickmax=1,
+						xtickstep=0.5,
+						ytickmin=-1,
+						ytickmax=1,
+						ytickstep=0.5,
+						ztickmin=-1,
+						ztickmax=1,
+						ztickstep=0.5,
+						),
+					)
+			vis.scatter(X = grid.data.cpu().numpy(),
+					win = 'grid_INPUT',
+					opts = dict(
+						markercolor=color_g,
+						title="grid_INPUT",
+						markersize = 4,
+						xtickmin=-1,
+						xtickmax=1,
+						xtickstep=0.5,
+						ytickmin=-1,
+						ytickmax=1,
+						ytickstep=0.5,
+						ztickmin=-1,
+						ztickmax=1,
+						ztickstep=0.5,
+						),
+					)
+		print('[object id:%d,step: %d] train loss: %f' %(i,step, loss_net.item()))
+	
+	#save last network
+	print('saving net...')
+	torch.save(network.state_dict(), './result/chamfer/%s%s.pth' % (dir_name,file_name))
+	np.save()
