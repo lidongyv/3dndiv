@@ -8,24 +8,50 @@ import numpy as np
 import torch.nn.functional as F
 
 
+class PointGenCon(nn.Module):
+    def __init__(self, bottleneck_size = 1027):
+        self.bottleneck_size = bottleneck_size
+        super(PointGenCon, self).__init__()
+        self.conv1 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size, 1)
+        self.conv2 = torch.nn.Conv1d(self.bottleneck_size, self.bottleneck_size//2, 1)
+        self.conv3 = torch.nn.Conv1d(self.bottleneck_size//2, self.bottleneck_size//4, 1)
+        self.conv4 = torch.nn.Conv1d(self.bottleneck_size//4, 3, 1)
+
+        self.th = nn.Tanh()
+        self.gn1 = torch.nn.GroupNorm(self.bottleneck_size,self.bottleneck_size)
+        self.gn2 = torch.nn.GroupNorm(self.bottleneck_size//2,self.bottleneck_size//2)
+        self.gn3 = torch.nn.GroupNorm(self.bottleneck_size//4,self.bottleneck_size//4)
+
+    def forward(self, x):
+        batchsize = x.size()[0]
+        # print(x.size())
+        x = F.leaky_relu(self.gn1(self.conv1(x)))
+        x = F.leaky_relu(self.gn2(self.conv2(x)))
+        x = F.leaky_relu(self.gn3(self.conv3(x)))
+        x = self.th(self.conv4(x))
+        return x
+
 class Discriminator(nn.Module):
     def __init__(self, num_points = 2500, global_feat = True, trans = False):
         super(Discriminator, self).__init__()
         self.conv1 = torch.nn.Conv1d(3, 64, 1)
         self.conv2 = torch.nn.Conv1d(64, 128, 1)
         self.conv3 = torch.nn.Conv1d(128, 1024, 1)
+        self.relu=torch.nn.LeakyReLU()
+        self.gn1 = torch.nn.GroupNorm(64,64)
+        self.gn2 = torch.nn.GroupNorm(128,128)
+        self.gn3 = torch.nn.GroupNorm(1024,1024)
+        self.feature=nn.Sequential(self.conv1,self.gn1,self.relu,self.conv2,self.relu,self.gn2,self.conv3)
 
-        self.bn1 = torch.nn.GroupNorm(64,64)
-        self.bn2 = torch.nn.GroupNorm(128,128)
-        self.bn3 = torch.nn.GroupNorm(1024,1024)
+        self.posterior=PointGenCon()
         self.trans = trans
         self.discriminator = nn.Sequential(
         nn.Linear(1024, 512),
         nn.GroupNorm(1,512),
-        nn.ReLU(),
+        nn.LeakyReLU(0.1),
         nn.Linear(512, 128),
         nn.GroupNorm(1,128),
-        nn.ReLU(),
+        nn.LeakyReLU(0.1),
         nn.Linear(128, 64),
         nn.Linear(64, 1),
         )
@@ -35,25 +61,28 @@ class Discriminator(nn.Module):
         self.global_feat = global_feat
         for m in self.modules():
             if isinstance(m, nn.Conv1d):
-                torch.nn.init.kaiming_uniform_(m.weight)
-                #m.weight.data.normal_(0.0, 0.02)
+                m.weight.data.normal_(0.0, 0.02)
             elif isinstance(m, nn.Linear):
-                torch.nn.init.kaiming_uniform_(m.weight)
-                #m.weight.data.normal_(0.0, 0.02)
+                m.weight.data.normal_(0.0, 0.02)
                 m.bias.data.fill_(0.0)
-            elif isinstance(m, nn.LayerNorm):
+            elif isinstance(m, nn.GroupNorm):
                 m.weight.data.normal_(1.0, 0.02)
                 m.bias.data.fill_(0)
     def forward(self, x):
+        input=x
         batchsize = x.size()[0]
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = self.bn3(self.conv3(x))
-        x,_ = torch.max(x, 2)
-        x = x.view(batchsize, 1024)
-        x=self.discriminator(x)
-        x=self.sigmoid(x)
-        return x
+        x = self.feature(x)
+
+        x_f,_ = torch.max(x, 2)
+        x_d = x_f.view(batchsize, 1024)
+        x_d=self.discriminator(x_d)
+        x_d=self.sigmoid(x_d)
+        x_r=x_f.view(batchsize,1024,1)
+        grid=torch.rand_like(input)*2-1
+        x_r=torch.cat([x_r.expand(batchsize,1024,input.shape[-1]),grid],dim=1)
+        x_r=self.posterior(x_r)
+        x_r=x_r.transpose(2,1)
+        return x_d,x_r
 
 
 class MeshMap(nn.Module):
