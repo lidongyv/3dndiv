@@ -11,6 +11,7 @@ from toy_data import *
 from ndmodel import *
 from my_utils import *
 from ply import *
+from ndiv_loss import *
 import os
 import json
 import time, datetime
@@ -22,10 +23,10 @@ parser.add_argument('--batchSize', type=int, default=1, help='input batch size')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=12)
 parser.add_argument('--nepoch', type=int, default=1200, help='number of epochs to train for')
 parser.add_argument('--model', type=str, default = '',  help='optional reload model path')
-parser.add_argument('--num_points', type=int, default = 100,  help='number of points')
+parser.add_argument('--num_points', type=int, default = 10000,  help='number of points')
 parser.add_argument('--nb_primitives', type=int, default = 1,  help='number of primitives in the atlas')
 parser.add_argument('--super_points', type=int, default = 2500,  help='number of input points to pointNet, not used by default')
-parser.add_argument('--env', type=str, default ="chamfer"   ,  help='visdom environment')
+parser.add_argument('--env', type=str, default ="ndiv"   ,  help='visdom environment')
 parser.add_argument('--accelerated_chamfer', type=int, default =0   ,  help='use custom build accelarated chamfer')
 parser.add_argument('--ngpu', type=int, default = 1,  help='number of gpus')
 opt = parser.parse_args()
@@ -33,40 +34,15 @@ print (opt)
 # ========================================================== #
 
 
-def pairwise_dist(x, y):
-	xx, yy, xy = torch.mm(x,x.t()), torch.mm(y,y.t()), torch.mm(x, y.t())
-	rx = (xx.diag().unsqueeze(0).expand_as(xx))
-	ry = (yy.diag().unsqueeze(0).expand_as(yy))
-	P = (rx.t() + ry - 2*xy)
-	return P
-
-
-def NN_loss(x, y, dim=0):
-	dist = pairwise_dist(x, y)
-	values, indices = dist.min(dim=dim)
-	return values.mean()
-
 def custom_dischamfer(x,y):
 	xx=torch.sum(torch.pow(x,2),dim=1)
 	yy=torch.sum(torch.pow(y,2),dim=1)
 	xy=torch.matmul(x,y.transpose(1,0))
-
-	xx=xx.unsqueeze(0).expand_as(xy)
+	
+	xx=xx.unsqueeze(1).expand_as(xy)
 	yy=yy.unsqueeze(0).expand_as(xy)
-	dist=xx.transpose(1,0)+yy-2*xy
+	dist=xx+yy-2*xy
 	return torch.min(dist,dim=0)[0],torch.min(dist,dim=1)[0]
-
-def distChamfer(a,b):
-	x,y = a.unsqueeze(0),b.unsqueeze(0)
-	bs, num_points, points_dim = x.size()
-	xx = torch.bmm(x, x.transpose(2,1))
-	yy = torch.bmm(y, y.transpose(2,1))
-	zz = torch.bmm(x, y.transpose(2,1))
-	diag_ind = torch.arange(0, num_points).type(torch.cuda.LongTensor)
-	rx = xx[:, diag_ind, diag_ind].unsqueeze(1).expand_as(xx)
-	ry = yy[:, diag_ind, diag_ind].unsqueeze(1).expand_as(yy)
-	P = (rx.transpose(2,1) + ry - 2*zz)
-	return torch.min(P, 1)[0], torch.min(P, 2)[0], torch.min(P, 1)[1], torch.min(P, 2)[1]# ========================================================== #
 
 # =============DEFINE stuff for logs ======================================== #
 # Launch visdom for visualization
@@ -137,10 +113,31 @@ for i, data in enumerate(dataloader, 0):
 	points = points.cuda().contiguous().squeeze()
 	#10000,3
 	recons=[]
+	alpha=1.5
+	# vis.scatter(X = points.data.cpu(),
+	# 		win = 'dense_points',
+	# 		opts = dict(
+	# 			title = "dense_points",
+	# 			markersize = 3,
+	# 			xtickmin=-1,
+	# 			xtickmax=1,
+	# 			xtickstep=0.5,
+	# 			ytickmin=-1,
+	# 			ytickmax=1,
+	# 			ytickstep=0.5,
+	# 			ztickmin=-1,
+	# 			ztickmax=1,
+	# 			ztickstep=0.5,
+	# 			),
+	# 		)
 	while(loss_net.item()>5*1e-3):
-		sample_index=np.random.randint(low=0,high=points.shape[0],size=opt.num_points)
-		target_points = points[sample_index,:]
-		sample_points = torch.rand_like(target_points[:,0:2])*2-1
+		target_points=points
+		s_x=torch.arange(int(np.sqrt(opt.num_points))).unsqueeze(0). \
+		expand(np.sqrt(opt.num_points).astype(np.int),np.sqrt(opt.num_points). \
+		astype(np.int)).contiguous()
+		s_y=s_x.transpose(1,0).contiguous()
+		sample_points=torch.cat([s_x.view(-1,1),s_y.view(-1,1)],dim=-1).cuda().float()
+		sample_points=(sample_points-np.sqrt(opt.num_points)/2)/(np.sqrt(opt.num_points)/2)
 		color=torch.ceil(((sample_points.data.cpu()+1)/2)*255).long()
 		color=torch.cat([color,color[:,:1]],dim=1)
 		color=color.data.numpy()
@@ -148,13 +145,17 @@ for i, data in enumerate(dataloader, 0):
 		#optimize each object
 		optimizer.zero_grad()
 		#END SUPER RESOLUTION
-		pointsReconstructed  = network(sample_points) #2500,3
-		dist1, dist2= custom_dischamfer(target_points, pointsReconstructed) #loss function
+		pointsReconstructed  = network(sample_points) #100,3
+		dist1, dist2= custom_dischamfer( pointsReconstructed,target_points) #loss function
 		#dist1, dist2,_,_ = distChamfer(target_points, pointsReconstructed) #loss function
-		loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
-		loss_net.backward()
+		loss_net = (torch.sum(dist1)) + (torch.sum(dist2))
+		loss_ndiv=NDiv_loss(sample_points,pointsReconstructed,alpha=alpha)
+		loss_train=loss_net+loss_ndiv
+		loss_train.backward()
 		optimizer.step()
 		step+=1
+		# alpha=torch.max(loss_net.detach()/loss_ndiv.detach(),100)
+
 		# VIZUALIZE
 		if step%100 <= 0:
 			
@@ -244,16 +245,17 @@ for i, data in enumerate(dataloader, 0):
 						ztickstep=0.5,
 						),
 					)
-			# recons.append(np.concatenate([target_points.data.cpu().numpy(), \
-			# 	pointsReconstructed.data.cpu().numpy(), \
-			# 		sample_points.data.cpu().numpy(), \
-			# 		gridReconstructed.data.cpu().numpy(), \
-			# 			grid.data.cpu().numpy()],axis=1))
+			recons.append(np.concatenate([ \
+				# target_points.data.cpu().numpy(), \
+				# pointsReconstructed.data.cpu().numpy(), \
+				# sample_points.data.cpu().numpy(), \
+				gridReconstructed.data.cpu().numpy(), \
+				grid.data.cpu().numpy()],axis=1))
 
-		print('[object id:%d,step: %d] train loss: %f' %(i,step, loss_net.item()))
+		print('[object id:%d,step: %d] chamfer loss: %f loss_ndiv: %f' %(i,step, loss_net.item(),loss_ndiv.item()))
 	
 	#save last network
 	print('saving net...')
-	torch.save({'state':network.state_dict(),'steps':step}, './results/chamfer/%s.pth' % (file_name))
-	np.save('./results/chamfer/%s.npy'%(file_name),np.array(recons))
+	torch.save({'state':network.state_dict(),'steps':step}, './results/ndiv/%s.pth' % (file_name))
+	np.save('./results/ndiv/%s.npy'%(file_name),np.array(recons))
 	print(file_name)
