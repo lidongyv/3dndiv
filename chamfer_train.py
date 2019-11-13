@@ -1,19 +1,19 @@
 from __future__ import print_function
+
 import argparse
 import random
+import sys
+
 import numpy as np
 import torch
 import torch.optim as optim
-import sys
+
 sys.path.append('./auxiliary/')
 from dataset_nd import *
 from toy_data import *
 from ndmodel import *
 from my_utils import *
-from ply import *
 import os
-import json
-import time, datetime
 import visdom
 
 # =============PARAMETERS======================================== #
@@ -26,7 +26,7 @@ parser.add_argument('--num_points', type=int, default = 100,  help='number of po
 parser.add_argument('--nb_primitives', type=int, default = 1,  help='number of primitives in the atlas')
 parser.add_argument('--super_points', type=int, default = 2500,  help='number of input points to pointNet, not used by default')
 parser.add_argument('--env', type=str, default ="chamfer"   ,  help='visdom environment')
-parser.add_argument('--accelerated_chamfer', type=int, default =0   ,  help='use custom build accelarated chamfer')
+parser.add_argument('--accelerated_chamfer', type=int, default=0, help='use custom build accelarated chamfer')
 parser.add_argument('--ngpu', type=int, default = 1,  help='number of gpus')
 opt = parser.parse_args()
 print (opt)
@@ -70,7 +70,8 @@ def distChamfer(a,b):
 
 # =============DEFINE stuff for logs ======================================== #
 # Launch visdom for visualization
-vis = visdom.Visdom(env=opt.env)
+# vis = visdom.Visdom(env=opt.env)
+vis = visdom.Visdom()
 dir_name =  os.path.join('chamfer')
 if not os.path.exists(dir_name):
 	os.mkdir(dir_name)
@@ -157,7 +158,22 @@ for i, data in enumerate(dataloader, 0):
 		step+=1
 		# VIZUALIZE
 		if step%100 <= 0:
-			
+    vis.scatter(X=points.data.cpu(),
+                win='Target',
+                opts=dict(
+                    title="Target",
+                    markersize=3,
+                    xtickmin=-1,
+                    xtickmax=1,
+                    xtickstep=0.5,
+                    ytickmin=-1,
+                    ytickmax=1,
+                    ytickstep=0.5,
+                    ztickmin=-1,
+                    ztickmax=1,
+                    ztickstep=0.5,
+                ),
+                )
 			vis.scatter(X = target_points.data.cpu(),
 					win = 'TRAIN_Target',
 					opts = dict(
