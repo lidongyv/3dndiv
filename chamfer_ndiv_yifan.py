@@ -130,10 +130,10 @@ color_g = torch.ceil(((grid.data.cpu() + 1) / 2) * 255).long()
 color_g = torch.cat([color_g, torch.ones_like(color_g[:, :1]) * 133], dim=1)
 color_g = color_g.data.numpy()
 
-input_grid_x = torch.arange(5).unsqueeze(0).expand(5, 5).contiguous()
+input_grid_x = torch.arange(-1, 1.1, 0.5).unsqueeze(0).expand(5, 5).contiguous()
 input_grid_y = input_grid_x.transpose(1, 0).contiguous()
 input_grid = torch.cat([input_grid_x.view(-1, 1), input_grid_y.view(-1, 1)], dim=-1).cuda().float()
-input_grid = (input_grid - 2.5) / 2.5
+# input_grid = (input_grid - 2.5) / 2.5
 color = torch.ceil(((input_grid.data.cpu() + 1) / 2) * 255).long()
 color = torch.cat([color, torch.ones_like(color[:, :1]) * 133], dim=1)
 color = color.data.numpy()
