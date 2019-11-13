@@ -163,10 +163,11 @@ for i, data in enumerate(dataloader, 0):
         optimizer.zero_grad()
         # END SUPER RESOLUTION
         pointsReconstructed = network(input_grid)  # 2500,3
-        dist1, dist2 = yifan_dischamfer(target_points, pointsReconstructed)  # loss function
-        # dist1, dist2,_,_ = distChamfer(target_points, pointsReconstructed) #loss function
-        loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
-        # loss_net = (torch.mean(dist1)) + (torch.mean(dist2)) + 0.01*compute_pairwise_divergence(input_grid, pointsReconstructed)
+        dist1, dist2 = yifan_dischamfer(target_points, pointsReconstructed)
+        # dist1, dist2,_,_ = distChamfer(target_points, pointsReconstructed)
+        # loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
+        loss_net = (torch.mean(dist1)) + (torch.mean(dist2)) + 0.01 * compute_pairwise_divergence(input_grid,
+                                                                                                  pointsReconstructed)
         loss_net.backward()
         optimizer.step()
         step += 1
