@@ -19,8 +19,8 @@ parser.add_argument('--num_points', type=int, default=25, help='number of input 
 parser.add_argument('--lrate', type=float, default=0.001)
 parser.add_argument('--alpha', type=float, default=0.8, help='alpha in ndiv loss')
 parser.add_argument('--env', type=str, default='chamfer_ndiv_random_25')
-parser.add_argument('--fixed', type=bool, default=False, help='input fixed grid or random sampled points')
-parser.add_argument('--ndiv', type=bool, default=True, help='if use ndiv loss')
+parser.add_argument('--fixed', action='store_true', help='input fixed grid rather than random sampled points')
+parser.add_argument('--ndiv', action='store_true', help='use ndiv loss')
 opt = parser.parse_args()
 print(opt)
 
