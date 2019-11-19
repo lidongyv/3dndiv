@@ -14,12 +14,13 @@ import visdom
 
 # =============PARAMETERS======================================== #
 parser = argparse.ArgumentParser()
-parser.add_argument('--nepoch', type=int, default=1200, help='number of epochs to train for')
+parser.add_argument('--nepoch', type=int, default=10000, help='number of epochs to train for')
 parser.add_argument('--num_points', type=int, default=25, help='number of input points')
 parser.add_argument('--lrate', type=float, default=0.001)
 parser.add_argument('--alpha', type=float, default=0.8, help='alpha in ndiv loss')
-parser.add_argument('--env', type=str, default='main')
-parser.add_argument('--fixed', type=bool, default=True, help='input fixed grid or random sampled points')
+parser.add_argument('--env', type=str, default='chamfer_ndiv_random_25')
+parser.add_argument('--fixed', type=bool, default=False, help='input fixed grid or random sampled points')
+parser.add_argument('--ndiv', type=bool, default=True, help='if use ndiv loss')
 opt = parser.parse_args()
 print(opt)
 
@@ -62,7 +63,6 @@ def yifan_dischamfer(a, b):
 
 
 # =============DEFINE stuff for logs ======================================== #
-vis = visdom.Visdom(env=opt.env)
 dir_name = os.path.join('./results/%s' % opt.env)
 if not os.path.exists(dir_name):
     os.mkdir(dir_name)
@@ -73,6 +73,7 @@ print("Random Seed: ", opt.manualSeed)
 random.seed(opt.manualSeed)
 torch.manual_seed(opt.manualSeed)
 best_val_loss = 10
+
 # ========================================================== #
 
 # ===================CREATE DATASET================================= #
@@ -96,27 +97,19 @@ network.apply(weights_init)  # initialization of the weight
 
 # ===================CREATE optimizer================================= #
 optimizer = optim.Adam(network.parameters(), lr=opt.lrate)
-# ========================================================== #
-
-
-# initialize learning curve on visdom, and color for each primitive in visdom displpycharm,ay
-train_curve = []
-# ========================================================== #
 
 # =============start of the learning loop ======================================== #
 # TRAIN MODE
 network.train()
-sqrt_num_points = np.sqrt(opt.num_points)
+sqrt_num_points = int(np.sqrt(opt.num_points))
 grid_x = torch.arange(100).unsqueeze(0).expand(100, 100).contiguous()
 grid_y = grid_x.transpose(1, 0).contiguous()
 grid_test = torch.cat([grid_x.view(-1, 1), grid_y.view(-1, 1)], dim=-1).cuda().float()
-# grid = (grid - 50) / 50  erro: the range is [-1, 0.98] rather than [-1,1]
 grid_test = (grid_test / (grid_test.max() - grid_test.min())) * 2 - 1
 color_2d_test = torch.ceil(((grid_test.data.cpu() + 1) / 2) * 255).long()
 color_2d_test = torch.cat([color_2d_test, torch.ones_like(color_2d_test[:, :1]) * 133], dim=1)
 color_2d_test = color_2d_test.data.numpy()
 
-### Input scale
 grid_x_train = torch.arange(sqrt_num_points).unsqueeze(0).expand(sqrt_num_points, sqrt_num_points).contiguous()
 grid_y_train = grid_x_train.transpose(1, 0).contiguous()
 grid_train = torch.cat([grid_x_train.view(-1, 1), grid_y_train.view(-1, 1)], dim=-1).cuda().float()
@@ -131,11 +124,15 @@ for i, data in enumerate(dataloader, 0):
     step = -1
     points, file_name = data
     file_name = file_name[0].split('.points.ply')[0].split('/')[-1]
+    vis = visdom.Visdom(env=(opt.env + '_' + file_name))
 
     # points=data[1]
     points = points.cuda().contiguous().squeeze()  # points.size: [1,10000,3]
     recons = []
-    while (loss_net.item() > 5 * 1e-3):
+    best_model = network.state_dict()
+    best_step = step
+    best_loss = loss_net
+    while (step <= opt.nepoch):
         target_points = points
         color_3d_target = torch.ceil(((target_points.data.cpu() + 1) / 2) * 255).long().data.numpy()
 
@@ -144,7 +141,7 @@ for i, data in enumerate(dataloader, 0):
         else:
             sample_index = np.random.randint(low=0, high=points.shape[0], size=opt.num_points)
             sample_points = torch.rand_like(points[sample_index, :][:, 0:2]) * 2 - 1
-
+            input = sample_points
             color_2d_train = torch.ceil(((sample_points.data.cpu() + 1) / 2) * 255).long()
             color_2d_train = torch.cat([color_2d_train, color_2d_train[:, :1]], dim=1)
             color_2d_train = color_2d_train.data.numpy()
@@ -158,11 +155,74 @@ for i, data in enumerate(dataloader, 0):
         dist2 = torch.mean(dist2)
         chamfer = dist1 + dist2
         ndiv = 0.01 * compute_pairwise_divergence(grid_train, pointsReconstructed)
-        loss_net = chamfer + ndiv
+
+        if opt.ndiv:
+            loss_net = chamfer + ndiv
+        else:
+            loss_net = chamfer
+
+        if loss_net < best_loss:
+            best_model = network.state_dict()
+            best_step = step
 
         loss_net.backward()
         optimizer.step()
+
         step += 1
+
+        vis.line(
+            X=step * torch.ones(1).cpu(),
+            Y=dist1.item() * torch.ones(1).cpu(),
+            win='loss_chamfer_train_target',
+            update='append',
+            opts=dict(xlabel='iters',
+                      ylabel='loss_chamfer_target_recon',
+                      title='loss_chamfer_train_target',
+                      legend=['loss_chamfer_train_target'])
+
+        )
+        vis.line(
+            X=step * torch.ones(1).cpu(),
+            Y=dist2.item() * torch.ones(1).cpu(),
+            win='loss_chamfer_train_recon',
+            update='append',
+            opts=dict(xlabel='iters',
+                      ylabel='loss_chamfer_recon_target',
+                      title='loss_chamfer_train_recon',
+                      legend=['loss_chamfer_train_recon'])
+        )
+        vis.line(
+            X=step * torch.ones(1).cpu(),
+            Y=chamfer.item() * torch.ones(1).cpu(),
+            win='loss_chamfer_total',
+            update='append',
+            opts=dict(xlabel='iters',
+                      ylabel='loss_chamfer_total',
+                      title='loss_chamfer_total',
+                      legend=['loss_chamfer_total'])
+        )
+
+        if opt.ndiv:
+            vis.line(
+                X=step * torch.ones(1).cpu(),
+                Y=ndiv.item() * torch.ones(1).cpu(),
+                win='loss_ndiv*0.01',
+                update='append',
+                opts=dict(xlabel='iters',
+                          ylabel='loss_ndiv*0.01',
+                          title='loss_ndiv*0.01',
+                          legend=['loss_ndiv*0.01'])
+            )
+        vis.line(
+            X=step * torch.ones(1).cpu(),
+            Y=loss_net.item() * torch.ones(1).cpu(),
+            win='loss_total',
+            update='append',
+            opts=dict(xlabel='minibatches',
+                      ylabel='loss_total',
+                      title='loss_total',
+                      legend=['loss_total'])
+        )
 
         # VIZUALIZE
         if step % 100 <= 0:
@@ -170,6 +230,23 @@ for i, data in enumerate(dataloader, 0):
                         win='Target',
                         opts=dict(
                             title="Target",
+                            markersize=3,
+                            xtickmin=-1,
+                            xtickmax=1,
+                            xtickstep=0.5,
+                            ytickmin=-1,
+                            ytickmax=1,
+                            ytickstep=0.5,
+                            ztickmin=-1,
+                            ztickmax=1,
+                            ztickstep=0.5,
+                        ),
+                        )
+            vis.scatter(X=input.data.cpu(),
+                        win='TRAIN_INPUT',
+                        opts=dict(
+                            markercolor=color_2d_train,
+                            title="INPUT",
                             markersize=3,
                             xtickmin=-1,
                             xtickmax=1,
@@ -235,13 +312,14 @@ for i, data in enumerate(dataloader, 0):
                             ztickstep=0.5,
                         ),
                         )
-
+            recons.append(np.concatenate([gridReconstructed.data.cpu().numpy(), grid_test.data.cpu().numpy()], axis=1))
             print(
-                '[object id:%d,step: %d] train loss: %f   chamfer_ab: %f   chamfer_ba: %f     ndiv: %f   ' % (
-                    i, step, loss_net.item(), dist1.item(), dist2.item(), ndiv.item()))
+                '[object id:%d,step: %d] train loss: %f   chamfer_ab: %f   chamfer_ba: %f    chamfer_total: %f    ndiv: %f   ' % (
+                    i, step, loss_net.item(), dist1.item(), dist2.item(), chamfer.item(), ndiv.item()))
 
     # save last network
     print('saving net...')
-    torch.save({'state': network.state_dict(), 'steps': step}, './chamfer/%s.pth' % (file_name))
-    np.save('./results/chamfer/%s.npy' % (file_name), np.array(recons))
-    print(file_name)
+    torch.save({'state': best_model, 'steps': best_step}, './results/%s/%s.pth' % (opt.env, file_name))
+    np.save('./results/%s/%s.npy' % (opt.env, file_name), np.array(recons))
+    print('Training finished: ', file_name)
+    print('----------------------------------')
