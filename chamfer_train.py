@@ -1,26 +1,21 @@
 from __future__ import print_function
 
 import argparse
-import random
-import sys
-
-import numpy as np
-import torch
-import torch.optim as optim
-
-sys.path.append('./auxiliary/')
-from dataset_nd import *
-from toy_data import *
-from ndmodel import *
-from my_utils import *
 import os
+
+import torch.optim as optim
 import visdom
+
+# sys.path.append('./auxiliary/')
+from auxiliary.dataset_nd import *
+from auxiliary.my_utils import *
+from auxiliary.ndmodel import *
 
 # =============PARAMETERS======================================== #
 parser = argparse.ArgumentParser()
 parser.add_argument('--batchSize', type=int, default=1, help='input batch size')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=12)
-parser.add_argument('--nepoch', type=int, default=1200, help='number of epochs to train for')
+parser.add_argument('--nepoch', type=int, default=1000, help='number of epochs to train for')
 parser.add_argument('--model', type=str, default = '',  help='optional reload model path')
 parser.add_argument('--num_points', type=int, default = 2500,  help='number of points')
 parser.add_argument('--nb_primitives', type=int, default = 1,  help='number of primitives in the atlas')
@@ -28,6 +23,8 @@ parser.add_argument('--super_points', type=int, default = 2500,  help='number of
 parser.add_argument('--env', type=str, default ="chamfer"   ,  help='visdom environment')
 parser.add_argument('--accelerated_chamfer', type=int, default=0, help='use custom build accelarated chamfer')
 parser.add_argument('--ngpu', type=int, default = 1,  help='number of gpus')
+parser.add_argument('--lrate', type=float, default=0.001, help='number of gpus')
+
 opt = parser.parse_args()
 print (opt)
 # ========================================================== #
@@ -96,7 +93,7 @@ len_dataset = len(dataset)
 
 # ===================CREATE network================================= #
 network = ND_Map(num_points = opt.num_points, nb_primitives = opt.nb_primitives)
-network=torch.nn.DataParallel(network,device_ids=range(opt.ngpu))
+network = torch.nn.DataParallel(network, device_ids=range(opt.ngpu))
 network.cuda() #put network on GPU
 network.apply(weights_init) #initialization of the weight
 
@@ -106,8 +103,8 @@ if opt.model != '':
 # ========================================================== #
 
 # ===================CREATE optimizer================================= #
-lrate = 0.001 #learning rate
-optimizer = optim.Adam(network.parameters(), lr = lrate)
+# learning rate
+optimizer = optim.Adam(network.parameters(), lr=opt.lrate)
 # ========================================================== #
 
 
