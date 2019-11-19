@@ -11,7 +11,7 @@ from toy_data import *
 from ndmodel import *
 from my_utils import *
 from ply import *
-from ndiv_loss import *
+from surface_loss import *
 import os
 import json
 import time, datetime
@@ -23,10 +23,10 @@ parser.add_argument('--batchSize', type=int, default=1, help='input batch size')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=12)
 parser.add_argument('--nepoch', type=int, default=1200, help='number of epochs to train for')
 parser.add_argument('--model', type=str, default = '',  help='optional reload model path')
-parser.add_argument('--num_points', type=int, default = 10000,  help='number of points')
+parser.add_argument('--num_points', type=int, default = 100,  help='number of points')
 parser.add_argument('--nb_primitives', type=int, default = 1,  help='number of primitives in the atlas')
-parser.add_argument('--super_points', type=int, default = 2500,  help='number of input points to pointNet, not used by default')
-parser.add_argument('--env', type=str, default ="ndiv"   ,  help='visdom environment')
+parser.add_argument('--super_points', type=int, default = 100,  help='number of input points to pointNet, not used by default')
+parser.add_argument('--env', type=str, default ="surface"   ,  help='visdom environment')
 parser.add_argument('--accelerated_chamfer', type=int, default =0   ,  help='use custom build accelarated chamfer')
 parser.add_argument('--ngpu', type=int, default = 1,  help='number of gpus')
 opt = parser.parse_args()
@@ -41,7 +41,7 @@ def custom_dischamfer(x,y):
 	
 	xx=xx.unsqueeze(1).expand_as(xy)
 	yy=yy.unsqueeze(0).expand_as(xy)
-	dist=torch.sqrt(xx+yy-2*xy)
+	dist=torch.sqrt(xx+yy-2*xy+1e-6)
 	return torch.min(dist,dim=0)[0],torch.min(dist,dim=1)[0]
 
 # =============DEFINE stuff for logs ======================================== #
@@ -114,50 +114,75 @@ for i, data in enumerate(dataloader, 0):
 	#10000,3
 	recons=[]
 	alpha=1.5
-	# vis.scatter(X = points.data.cpu(),
-	# 		win = 'dense_points',
-	# 		opts = dict(
-	# 			title = "dense_points",
-	# 			markersize = 3,
-	# 			xtickmin=-1,
-	# 			xtickmax=1,
-	# 			xtickstep=0.5,
-	# 			ytickmin=-1,
-	# 			ytickmax=1,
-	# 			ytickstep=0.5,
-	# 			ztickmin=-1,
-	# 			ztickmax=1,
-	# 			ztickstep=0.5,
-	# 			),
-	# 		)
+	vis.scatter(X = points.data.cpu(),
+			win = 'dense_points',
+			opts = dict(
+				title = "dense_points",
+				markersize = 3,
+				xtickmin=-1,
+				xtickmax=1,
+				xtickstep=0.5,
+				ytickmin=-1,
+				ytickmax=1,
+				ytickstep=0.5,
+				ztickmin=-1,
+				ztickmax=1,
+				ztickstep=0.5,
+				),
+			)
+	target_points=points
+	s_x=torch.arange(int(np.sqrt(opt.num_points))).unsqueeze(0). \
+	expand(np.sqrt(opt.num_points).astype(np.int),np.sqrt(opt.num_points). \
+	astype(np.int)).contiguous()
+	s_y=s_x.transpose(1,0).contiguous()
+	sample_points=torch.cat([s_x.view(-1,1),s_y.view(-1,1)],dim=-1).cuda().float()
+	sample_points=(sample_points-np.sqrt(opt.num_points)/2)/(np.sqrt(opt.num_points)/2)
+	color=torch.ceil(((sample_points.data.cpu()+1)/2)*255).long()
+	color=torch.cat([color,color[:,:1]],dim=1)
+	color=color.data.numpy()
+	color_t=torch.ceil(((target_points.data.cpu()+1)/2)*255).long().data.numpy()
+	size=2/np.sqrt(opt.num_points)
+	mid_pos=init_middle(sample_points,size)
 	while(loss_net.item()>5*1e-3):
-		target_points=points
-		s_x=torch.arange(int(np.sqrt(opt.num_points))).unsqueeze(0). \
-		expand(np.sqrt(opt.num_points).astype(np.int),np.sqrt(opt.num_points). \
-		astype(np.int)).contiguous()
-		s_y=s_x.transpose(1,0).contiguous()
-		sample_points=torch.cat([s_x.view(-1,1),s_y.view(-1,1)],dim=-1).cuda().float()
-		sample_points=(sample_points-np.sqrt(opt.num_points)/2)/(np.sqrt(opt.num_points)/2)
-		color=torch.ceil(((sample_points.data.cpu()+1)/2)*255).long()
-		color=torch.cat([color,color[:,:1]],dim=1)
-		color=color.data.numpy()
-		color_t=torch.ceil(((target_points.data.cpu()+1)/2)*255).long().data.numpy()
 		#optimize each object
 		optimizer.zero_grad()
 		#END SUPER RESOLUTION
-		pointsReconstructed  = network(sample_points) #100,3
-		dist1, dist2= custom_dischamfer( pointsReconstructed,target_points) #loss function
+		pointsReconstructed  = network(sample_points) 
+		dist1, dist2= custom_dischamfer(target_points, pointsReconstructed) #loss function
 		#dist1, dist2,_,_ = distChamfer(target_points, pointsReconstructed) #loss function
-		loss_net = (torch.sum(dist1)) + (torch.sum(dist2))
-		loss_ndiv=NDiv_loss(sample_points,pointsReconstructed,alpha=alpha)
+		loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
+		# loss_ndiv=loss_net
+		loss_ndiv=NDiv_loss_surface(sample_points,pointsReconstructed,mid_pos, \
+			alpha=alpha,mode=-1)
 		loss_train=loss_net+loss_ndiv
 		loss_train.backward()
 		optimizer.step()
 		step+=1
 		# alpha=torch.max(loss_net.detach()/loss_ndiv.detach(),100)
-
+		vis.line(
+			X=step*torch.ones(1).cpu(),
+			Y=loss_net.item()*torch.ones(1).cpu(),
+			win='chamfer',
+			update='append',
+			opts=dict(xlabel='minibatches',
+						ylabel='chamfer Loss',
+						title='chamfer Loss',
+						legend=['chamfer Loss'])
+		
+			)
+		vis.line(
+			X=step*torch.ones(1).cpu(),
+			Y=loss_ndiv.item()*torch.ones(1).cpu(),
+			win='ndiv',
+			update='append',
+			opts=dict(xlabel='minibatches',
+						ylabel='ndiv Loss',
+						title='ndiv Loss',
+						legend=['ndiv Loss'])
+		
+			)
 		# VIZUALIZE
-		if step%100 <= 0:
+		if step%200 <= 0:
 			
 			vis.scatter(X = target_points.data.cpu(),
 					win = 'TRAIN_Target',
@@ -245,6 +270,7 @@ for i, data in enumerate(dataloader, 0):
 						ztickstep=0.5,
 						),
 					)
+
 			recons.append(np.concatenate([ \
 				# target_points.data.cpu().numpy(), \
 				# pointsReconstructed.data.cpu().numpy(), \
@@ -256,6 +282,6 @@ for i, data in enumerate(dataloader, 0):
 	
 	#save last network
 	print('saving net...')
-	torch.save({'state':network.state_dict(),'steps':step}, './results/ndiv/%s.pth' % (file_name))
-	np.save('./results/ndiv/%s.npy'%(file_name),np.array(recons))
+	torch.save({'state':network.state_dict(),'steps':step}, './results/surface/%s.pth' % (file_name))
+	np.save('./results/surface/%s.npy'%(file_name),np.array(recons))
 	print(file_name)

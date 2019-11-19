@@ -22,7 +22,7 @@ parser.add_argument('--batchSize', type=int, default=1, help='input batch size')
 parser.add_argument('--workers', type=int, help='number of data loading workers', default=12)
 parser.add_argument('--nepoch', type=int, default=1200, help='number of epochs to train for')
 parser.add_argument('--model', type=str, default = '',  help='optional reload model path')
-parser.add_argument('--num_points', type=int, default = 100,  help='number of points')
+parser.add_argument('--num_points', type=int, default = 2500,  help='number of points')
 parser.add_argument('--nb_primitives', type=int, default = 1,  help='number of primitives in the atlas')
 parser.add_argument('--super_points', type=int, default = 2500,  help='number of input points to pointNet, not used by default')
 parser.add_argument('--env', type=str, default ="chamfer"   ,  help='visdom environment')
@@ -70,8 +70,8 @@ def distChamfer(a,b):
 
 # =============DEFINE stuff for logs ======================================== #
 # Launch visdom for visualization
-# vis = visdom.Visdom(env=opt.env)
-vis = visdom.Visdom()
+vis = visdom.Visdom(env=opt.env)
+# vis = visdom.Visdom()
 dir_name =  os.path.join('chamfer')
 if not os.path.exists(dir_name):
 	os.mkdir(dir_name)
@@ -158,22 +158,22 @@ for i, data in enumerate(dataloader, 0):
 		step+=1
 		# VIZUALIZE
 		if step%100 <= 0:
-    vis.scatter(X=points.data.cpu(),
-                win='Target',
-                opts=dict(
-                    title="Target",
-                    markersize=3,
-                    xtickmin=-1,
-                    xtickmax=1,
-                    xtickstep=0.5,
-                    ytickmin=-1,
-                    ytickmax=1,
-                    ytickstep=0.5,
-                    ztickmin=-1,
-                    ztickmax=1,
-                    ztickstep=0.5,
-                ),
-                )
+			vis.scatter(X=points.data.cpu(),
+						win='Target',
+						opts=dict(
+							title="Target",
+							markersize=3,
+							xtickmin=-1,
+							xtickmax=1,
+							xtickstep=0.5,
+							ytickmin=-1,
+							ytickmax=1,
+							ytickstep=0.5,
+							ztickmin=-1,
+							ztickmax=1,
+							ztickstep=0.5,
+						),
+						)
 			vis.scatter(X = target_points.data.cpu(),
 					win = 'TRAIN_Target',
 					opts = dict(
@@ -224,42 +224,42 @@ for i, data in enumerate(dataloader, 0):
 						ztickstep=0.5,
 						),
 					)
-			with torch.no_grad():
-				gridReconstructed  = network(grid)
-			vis.scatter(X = gridReconstructed.data.cpu(),
-					win = 'grid_RECONSTRUCTED',
-					opts = dict(
-						markercolor=color_g,
-						title="grid_RECONSTRUCTED",
-						markersize = 3,
-						xtickmin=-1,
-						xtickmax=1,
-						xtickstep=0.5,
-						ytickmin=-1,
-						ytickmax=1,
-						ytickstep=0.5,
-						ztickmin=-1,
-						ztickmax=1,
-						ztickstep=0.5,
-						),
-					)
-			vis.scatter(X = grid.data.cpu().numpy(),
-					win = 'grid_INPUT',
-					opts = dict(
-						markercolor=color_g,
-						title="grid_INPUT",
-						markersize = 4,
-						xtickmin=-1,
-						xtickmax=1,
-						xtickstep=0.5,
-						ytickmin=-1,
-						ytickmax=1,
-						ytickstep=0.5,
-						ztickmin=-1,
-						ztickmax=1,
-						ztickstep=0.5,
-						),
-					)
+		with torch.no_grad():
+			gridReconstructed  = network(grid)
+		vis.scatter(X = gridReconstructed.data.cpu(),
+				win = 'grid_RECONSTRUCTED',
+				opts = dict(
+					markercolor=color_g,
+					title="grid_RECONSTRUCTED",
+					markersize = 3,
+					xtickmin=-1,
+					xtickmax=1,
+					xtickstep=0.5,
+					ytickmin=-1,
+					ytickmax=1,
+					ytickstep=0.5,
+					ztickmin=-1,
+					ztickmax=1,
+					ztickstep=0.5,
+					),
+				)
+		vis.scatter(X = grid.data.cpu().numpy(),
+				win = 'grid_INPUT',
+				opts = dict(
+					markercolor=color_g,
+					title="grid_INPUT",
+					markersize = 4,
+					xtickmin=-1,
+					xtickmax=1,
+					xtickstep=0.5,
+					ytickmin=-1,
+					ytickmax=1,
+					ytickstep=0.5,
+					ztickmin=-1,
+					ztickmax=1,
+					ztickstep=0.5,
+					),
+				)
 			# recons.append(np.concatenate([target_points.data.cpu().numpy(), \
 			# 	pointsReconstructed.data.cpu().numpy(), \
 			# 		sample_points.data.cpu().numpy(), \
