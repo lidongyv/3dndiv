@@ -112,7 +112,9 @@ for i, data in enumerate(dataloader, 0):
 	# points=data[1]
 	points = points.cuda().contiguous().squeeze()
 	#10000,3
-	recons=[]
+	recons_dense=[]
+	recons_sparse=[]
+	loss=[]
 	alpha=1.5
 	vis.scatter(X = points.data.cpu(),
 			win = 'dense_points',
@@ -143,7 +145,8 @@ for i, data in enumerate(dataloader, 0):
 	color_t=torch.ceil(((target_points.data.cpu()+1)/2)*255).long().data.numpy()
 	size=2/np.sqrt(opt.num_points)
 	mid_pos=init_middle(sample_points,size)
-	while(loss_net.item()>5*1e-3):
+
+	while(loss_net.item()>5*1e-3 and step<1e4):
 		#optimize each object
 		optimizer.zero_grad()
 		#END SUPER RESOLUTION
@@ -153,7 +156,7 @@ for i, data in enumerate(dataloader, 0):
 		loss_net = (torch.mean(dist1)) + (torch.mean(dist2))
 		# loss_ndiv=loss_net
 		loss_ndiv=NDiv_loss_surface(sample_points,pointsReconstructed,mid_pos, \
-			alpha=alpha,mode=-1)
+			alpha=alpha,mode=0)
 		loss_train=loss_net+loss_ndiv
 		loss_train.backward()
 		optimizer.step()
@@ -181,8 +184,9 @@ for i, data in enumerate(dataloader, 0):
 						legend=['ndiv Loss'])
 		
 			)
+		loss.append([loss_net.item(),loss_ndiv.item()])
 		# VIZUALIZE
-		if step%200 <= 0:
+		if step%100 ==0:
 			
 			vis.scatter(X = target_points.data.cpu(),
 					win = 'TRAIN_Target',
@@ -271,17 +275,22 @@ for i, data in enumerate(dataloader, 0):
 						),
 					)
 
-			recons.append(np.concatenate([ \
+			recons_dense.append(np.concatenate([ \
 				# target_points.data.cpu().numpy(), \
 				# pointsReconstructed.data.cpu().numpy(), \
 				# sample_points.data.cpu().numpy(), \
 				gridReconstructed.data.cpu().numpy(), \
-				grid.data.cpu().numpy()],axis=1))
-
+				# grid.data.cpu().numpy() \
+			],axis=1))
+			recons_sparse.append(np.concatenate([ \
+				pointsReconstructed.data.cpu().numpy(), \
+			],axis=1))
 		print('[object id:%d,step: %d] chamfer loss: %f loss_ndiv: %f' %(i,step, loss_net.item(),loss_ndiv.item()))
 	
 	#save last network
 	print('saving net...')
 	torch.save({'state':network.state_dict(),'steps':step}, './results/surface/%s.pth' % (file_name))
-	np.save('./results/surface/%s.npy'%(file_name),np.array(recons))
+	np.save('./results/surface/dense_%s.npy'%(file_name),np.array(recons_dense))
+	np.save('./results/surface/sparse_%s.npy'%(file_name),np.array(recons_sparse))
+	np.save('./results/surface/loss_%s.npy'%(file_name),np.array(loss))
 	print(file_name)

@@ -46,14 +46,17 @@ def middle_position(i,j,size):
 		return pi[0]*size+pj[1]
 	else:
 		return pj[0]*size+pi[1]
-		
+
 def init_middle(x,size):
 	pos=[]
-	for i in range(x.shape[0]):
-		for j in range(x.shape[0]):
-			middle=middle_position(i,j,size)
-			pos.append([i,middle,j])
-	np.save('',pos)
+	if os.path.exists('./auxiliary/sample/size%s.npy'%(str(size))):
+		pos=np.load('./auxiliary/sample/size%s.npy'%(str(size)))
+	else:
+		for i in range(x.shape[0]):
+			for j in range(x.shape[0]):
+				middle=middle_position(i,j,size)
+				pos.append([i,middle,j])
+		np.save('./auxiliary/sample/size%s.npy'%(str(size)),pos)
 	return np.array(pos)
 def compute_norm_pairwise_distance(x,mid_pos):
 	''' computation of normalized pairwise distance matrix
@@ -89,7 +92,7 @@ def compute_norm_pairwise_distance(x,mid_pos):
 
 	return x_norm_pair_dist
 
-def NDiv_loss_surface(x, y,mid_pos, alpha=0.8,mode=2):
+def NDiv_loss_surface(x, y,mid_pos, alpha=1,mode=2):
 	''' NDiv loss function.
 	---- Input
 	- x: (sample_number,2)
